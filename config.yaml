@@ -1,0 +1,3 @@
+intermediate_base_folder: ./intermediate
+filename_prefix: filename
+days_ago: 30
