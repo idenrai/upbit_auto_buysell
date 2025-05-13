@@ -1,3 +1,4 @@
+import pyupbit
 import argparse
 import boto3
 from boto3.dynamodb.conditions import Key, Attr
@@ -40,43 +41,79 @@ def setup_logger():
     return _logger
 
 
+# Upbit API 관련 함수
+class UpbitAPI:
+    def __init__(self, access_key, secret_key):
+        self.upbit = pyupbit.Upbit(access_key, secret_key)
+
+    def get_krw_balance(self):
+        balances = self.upbit.get_balances()
+        for balance in balances:
+            if balance["currency"] == "KRW":
+                return float(balance["balance"])
+        return 0
+
+    def get_balance(self, ticker):
+        balances = self.upbit.get_balances()
+        for balance in balances:
+            if balance["currency"] == ticker.split("-")[1]:
+                return float(balance["balance"])
+        return 0
+
+    def get_tickers(self):
+        balances = self.upbit.get_balances()
+        tickers = []
+        for balance in balances:
+            if balance["currency"] != "KRW":
+                ticker = f"KRW-{balance['currency']}"
+                tickers.append(ticker)
+        return tickers
+
+    def check_order_status(self, ticker):
+        orders = self.upbit.get_order(ticker)
+        logger.info(f"Orders: {orders}")
+        if not orders:
+            return True
+        for order in orders:
+            if order["status"] != "done":
+                return False
+        return True
+
+    def rebalancing_orders(self, ticker, price, amount):
+        sell_price = price * 1.2
+        logger.info(f"[{ticker}] Sell price: {sell_price}, Sell amount: {amount:.8f}")
+        # sell_order = self.upbit.sell_limit_order(ticker, sell_price, amount)
+        # logger.info(f"[{ticker}] Sell order placed: {sell_order}")
+
+        buy_price = price * 0.8
+        logger.info(f"[{ticker}] Buy price: {buy_price}, Buy amount: {amount:.8f}")
+        # buy_order = self.upbit.buy_limit_order(ticker, buy_price, amount)
+        # logger.info(f"[{ticker}]Buy order placed: {buy_order}")
+
+
 def execute():
     """
     Execute
     :return:
     """
-    # DynamoDB 설정
-    dynamodb = boto3.resource('dynamodb', endpoint_url=get_env("DYNAMO_DB_ENDPOINT"))
-    document_table = dynamodb.Table(get_env("DYNAMO_DB_DOCUMENT_TABLE"))
 
-    # 중간 파일 폴더 작성
-    intermediate_folder = os.path.join(
-        conf["intermediate_base_folder"], timestamp
-    )
-    os.makedirs(intermediate_folder)
-    target_db_file = os.path.join(intermediate_folder, conf["filename_prefix"] + "_db.json")
+    krw_balance = upbit_api.get_krw_balance()
+    logger.info(f"KRW Balance: {krw_balance}")
 
-    # DynamoDB 로부터 데이터 취득
-    target_date = (datetime.now() - timedelta(days=conf["days_ago"])).strftime('%Y-%m-%d')
+    tickers = upbit_api.get_tickers()
+    logger.info(f"Tickers: {tickers}")
 
-    logger.info("Get target documents from DynamoDB")
-    logger.info(f"Target : Documents created before {target_date}")
-    response = document_table.scan(
-        FilterExpression=Key('created_at').lt(target_date) & Attr('status').eq('INSERTED')
-    )
-    target_documents = response['Items']
+    # 티커별 잔고 조회
+    for ticker in tickers:
+        balance = upbit_api.get_balance(ticker)
+        logger.info(f"Balance for {ticker}: {balance}")
+        current_price = pyupbit.get_current_price(ticker)
+        logger.info(f"Current price for {ticker}: {current_price}")
 
-    while 'LastEvaluatedKey' in response:
-        response = document_table.scan(
-            FilterExpression=Key('created_at').lt(target_date) & Attr('status').eq('INSERTED'),
-            ExclusiveStartKey=response['LastEvaluatedKey']
-        )
-        target_documents.extend(response['Items'])
-
-    save_to_json(target_db_file, target_documents)
-
-    logger.info(f"DB file path: {target_db_file}")
-    logger.info(f"Target documents : {len(target_documents)}")
+        if upbit_api.check_order_status(ticker):
+            amount = round(10000 / current_price, 8)
+            upbit_api.rebalancing_orders(ticker, current_price, amount)
+            logger.info(f"Rebalancing orders placed for {ticker}")
 
 
 if __name__ == "__main__":
@@ -99,5 +136,15 @@ if __name__ == "__main__":
     timestamp = now.strftime("%Y%m%d%H%M%S")
     logger = setup_logger()
     logger.info(f"Processing {env} environment")
+
+    access_key = get_env("ACCESS_KEY")
+    secret_key = get_env("SECRET_KEY")
+
+    try:
+        upbit_api = UpbitAPI(access_key, secret_key)
+        logger.info("Upbit API initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing Upbit API: {e}")
+        exit(1)
 
     execute()
