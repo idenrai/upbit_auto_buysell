@@ -117,16 +117,9 @@ def execute():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--env", type=validate_env_name, required=True, help="Environment to be updated"
-    )
-    args = parser.parse_args()
-    env = args.env.lower()
-
     # 환경변수 로드
     load_dotenv(verbose=True)
-    load_dotenv(f"envs/.{env}.env", override=True)
+    load_dotenv("envs/.env", override=True)
 
     # Config
     conf = load_config()
@@ -135,7 +128,6 @@ if __name__ == "__main__":
     now = datetime.now(ZoneInfo("Asia/Tokyo"))
     timestamp = now.strftime("%Y%m%d%H%M%S")
     logger = setup_logger()
-    logger.info(f"Processing {env} environment")
 
     access_key = get_env("ACCESS_KEY")
     secret_key = get_env("SECRET_KEY")
