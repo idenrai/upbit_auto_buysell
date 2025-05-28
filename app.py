@@ -26,9 +26,10 @@ class UpbitAPI:
         return 0
 
     def get_balance(self, ticker):
+        currency = ticker.split("-")[1]
         balances = self.upbit.get_balances()
         for balance in balances:
-            if balance["currency"] == ticker.split("-")[1]:
+            if balance["currency"] == currency:
                 return float(balance["balance"])
         return 0
 
@@ -36,19 +37,28 @@ class UpbitAPI:
         balances = self.upbit.get_balances()
         return [f"KRW-{b['currency']}" for b in balances if b["currency"] != "KRW"]
 
-    def check_order_status(self, ticker):
-        orders = self.upbit.get_order(ticker)
-        if not orders:
-            return True
-        return all(order["status"] == "done" for order in orders)
-
     def rebalancing_orders(self, ticker, price, amount, ratio):
         sell_price = price * (1 + ratio)
         buy_price = price * (1 - ratio)
-        # 실제 주문은 아래 주석 해제 필요
-        # sell_order = self.upbit.sell_limit_order(ticker, sell_price, amount)
-        # buy_order = self.upbit.buy_limit_order(ticker, buy_price, amount)
-        return sell_price, buy_price
+        sell_order = self.upbit.sell_limit_order(ticker, sell_price, amount)
+        buy_order = self.upbit.buy_limit_order(ticker, buy_price, amount)
+        sell_uuid = sell_order.get("uuid") if isinstance(sell_order, dict) else None
+        buy_uuid = buy_order.get("uuid") if isinstance(buy_order, dict) else None
+        return {
+            "sell_price": sell_price,
+            "buy_price": buy_price,
+            "sell_uuid": sell_uuid,
+            "buy_uuid": buy_uuid,
+        }
+
+    def check_order_status(self, sell_uuid, buy_uuid):
+        def is_done(uuid):
+            if not uuid:
+                return True
+            order = self.upbit.get_order(uuid)
+            return bool(order and order[0]["status"] == "done")
+
+        return is_done(sell_uuid) and is_done(buy_uuid)
 
 
 # ====== 환경변수 및 API 인스턴스 ======
@@ -92,14 +102,12 @@ def rebalance_loop(api, ticker, ratio, price_ratio, term_hour, log_callback, sto
         current_price = pyupbit.get_current_price(ticker)
         balance = api.get_balance(ticker)
         amount = round(balance * ratio, 8)
-        sell_price, buy_price = api.rebalancing_orders(
-            ticker, current_price, amount, price_ratio
-        )
-        log_callback(f"매도 주문: {sell_price:.2f} / 수량: {amount}")
-        log_callback(f"매수 주문: {buy_price:.2f} / 수량: {amount}")
+        order_info = api.rebalancing_orders(ticker, current_price, amount, price_ratio)
+        log_callback(f"매도 주문: {order_info['sell_price']:.2f} / 수량: {amount}")
+        log_callback(f"매수 주문: {order_info['buy_price']:.2f} / 수량: {amount}")
         # 주문 상태 확인
         while not stop_flag[0]:
-            if api.check_order_status(ticker):
+            if api.check_order_status(order_info["sell_uuid"], order_info["buy_uuid"]):
                 log_callback("주문 완료. 다음 리밸런싱 진행.")
                 break
             log_callback(f"주문 미완료. {term_hour}시간 후 재확인.")
@@ -143,10 +151,8 @@ if st.session_state["current_price"]:
     buy_price = st.session_state["current_price"] * (1 - price_ratio_val)
     st.write(f"매도가: {sell_price:.2f}")
     st.write(f"매수가: {buy_price:.2f}")
-    # 주문에 필요한 최소 KRW 계산 (매수 주문이 먼저 체결될 경우)
     min_krw_required = buy_price * rebalance_amount
     st.write(f"매수 주문 체결 시 필요한 최소 KRW: {min_krw_required:.2f}")
-    # 내 KRW 잔액 확인 및 경고
     my_krw = api.get_krw_balance()
     st.write(f"내 KRW 잔액: {my_krw:.2f}")
     krw_warning = False
@@ -165,7 +171,6 @@ term_hour = st.number_input(
     value=TERM_DEFAULT,
 )
 
-# 4. START/STOP 버튼
 col1, col2 = st.columns(2)
 with col1:
     start_disabled = krw_warning or (
@@ -200,7 +205,6 @@ with col2:
         st.session_state["stop_flag"][0] = True
         st.write("자동 주문 중지 요청됨.")
 
-# 5. 로그 출력
 st.write("---")
 for msg in st.session_state["log"]:
     st.write(msg)
