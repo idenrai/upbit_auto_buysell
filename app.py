@@ -168,7 +168,10 @@ term_hour = st.number_input(
 # 4. START/STOP 버튼
 col1, col2 = st.columns(2)
 with col1:
-    if st.button("START", disabled=krw_warning):
+    start_disabled = krw_warning or (
+        st.session_state["thread"] is not None and st.session_state["thread"].is_alive()
+    )
+    if st.button("START", disabled=start_disabled):
         st.session_state["stop_flag"][0] = False
         if (
             st.session_state["thread"] is None
@@ -190,7 +193,10 @@ with col1:
             )
             st.session_state["thread"].start()
 with col2:
-    if st.button("STOP"):
+    stop_disabled = not (
+        st.session_state["thread"] is not None and st.session_state["thread"].is_alive()
+    )
+    if st.button("STOP", disabled=stop_disabled):
         st.session_state["stop_flag"][0] = True
         st.write("자동 주문 중지 요청됨.")
 
