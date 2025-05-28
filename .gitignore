@@ -165,4 +165,4 @@ envs/*.env
 logs/*
 intermediate/*
 .DS_Store
-.duckdb
+*.duckdb
