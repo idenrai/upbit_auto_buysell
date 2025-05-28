@@ -1,15 +1,17 @@
-# python_script
+# Upbit API를 이용한 간이 리밸런싱 앱
 
-데이터 입출력 등의 간단한 처리를 위한 Python script 를 작성함에 있어, 아래의 기능을 제공하는 템플릿
+보유중인 특정 Ticker에 대해, 선택한 비율과 금액으로 정기적으로 리밸런싱을 실시하는 어플리케이션.
+여기서 리밸런싱이란, 설정한 가격과 비율로 매수/매도를 실시하는 것을 의미함.
+예를 들어, 설정한 가격이 현재가의 5%, 비율이 보유 수량의 10%라고 할 경우, 어플리케이션은 아래와 같은 동작을 실시.
 
-- Poetry를 통한 패키지 관리 및 가상환경 설정
-- 환경변수 관리
-- YAML을 이용한 config 관리
-- Log 기록
-- JSON 읽기/쓰기
-- 위의 기능을 이용하는 샘플 스크립트
+현재가 +5% (105%) 의 가격으로, 보유 수량의 10% 분에 대하여 매도 주문
+현재가 -5% (95%) 의 가격으로, 보유 수량의 10% 분에 대하여 매수 주문
+어플리케이션은 설정한 Term마다 해당 주문이 종료되었는지를 확인하고,
+매도/매수 주문이 둘 다 종료되었을 경우에는 다시 현재의 가격과 보유 수량을 취득하여 지정된 가격/비율로 다시 매도/매수 주문을 넣음
 
 ## Setting
+
+### 개발 환경 구축
 
 Poetry를 이용하여 개발 환경 구축
 
@@ -21,46 +23,17 @@ poetry install
 poetry shell
 ```
 
-## Sample Scripts
+### 환경변수 설정
 
-샘플 스크립트는 아래의 두가지 처리를 실시
-
-- search_sample.py
-  - `DynamoDB` 의 `Document Table` 에서 조건에 맞는 데이터를 검색하여 JSON파일로 저장
-- update_sample.py
-  - JSON파일을 읽어, 해당 데이터를 `DynamoDB` 의 `Document Table` 에서 논리삭제
-
-### Seting
-
-제공되는 스크립트는 Docker로 구동하는 DynamoDB Local 을 이용하고 있음
-
-#### DynamoDB Local
-
-동일 리포지토리의 `dynamodb_local` 를 참조
-
-#### 환경변수
-
-`.dev.env.sample` 을 복사하여 `.dev.env` 파일을 작성
-
-### Run
-
-#### search_sample
-
-- env : 실행할 환경 (dev, stg, prd)
-
-예시
+`.env.sample` 을 복사하여 `.env` 파일을 작성
 
 ```shell
-python search_sample.py --env=dev
+ACCESS_KEY=<Upbit Access Key>
+SECRET_KEY=<Upbit Secret Key>
 ```
 
-#### update_sample
-
-- env : 실행할 환경 (dev, stg, prd)
-- timestamp : `search_sample.py`의 실행 결과 `intermediate` 폴더 안에 생성되는 `YYYYmmDDHHMMSS` 폴더명
-
-예시
+## Run
 
 ```shell
-python update_sample.py --env=dev --timestamp=20240706162914
+streamlit run app.py
 ```
