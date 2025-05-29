@@ -15,7 +15,6 @@ from order_db import (
     update_order_status,
 )
 import traceback
-import time as _time
 
 # ====== 상수 및 옵션 ======
 REBALANCE_RATIO_OPTIONS = [5, 10, 15, 20]
