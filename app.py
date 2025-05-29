@@ -15,6 +15,7 @@ from order_db import (
     update_order_status,
 )
 import traceback
+import time as _time
 
 # ====== 상수 및 옵션 ======
 REBALANCE_RATIO_OPTIONS = [5, 10, 15, 20]
@@ -59,61 +60,49 @@ def log_callback_factory(log_queue):
     return log_callback
 
 
+def update_all_pending_orders_status(api):
+    """
+    DB의 미체결 주문 상태를 Upbit에서 확인하여 DB에 반영한다.
+    상태가 변경된 주문이 있으면 True, 아니면 False 반환.
+    """
+    pending_orders = get_pending_orders()
+    print(f"[주문 상태 갱신] 미체결 주문 {len(pending_orders)}건 상태 동기화 시작")
+    changed = False
+    for order in pending_orders:
+        try:
+            uuid = order[2]
+            if not uuid:
+                print(f"[경고] uuid 없음: {order}")
+                continue
+            if not isinstance(uuid, str):
+                uuid = str(uuid)
+            status = api.check_order_status(uuid)
+            print(f"[주문 상태 갱신] uuid={uuid}, status={status}")
+            if status in ("done", "cancel", "wait", "watch", "unknown"):
+                update_order_status(uuid, status)
+                changed = True
+        except Exception as e:
+            print(f"[ERROR] 주문 상태 동기화 실패: {e}, order={order}")
+            print(traceback.format_exc())
+    return changed
+
+
 def process_pending_orders(api, update_order_status_func, term_hour, stop_flag):
     """
     미체결 주문 상태 확인 및 갱신 공통 처리 함수.
     모든 주문이 done/cancel이면 True, 아니면 False 반환.
     """
+    update_all_pending_orders_status(api)
     pending_orders = get_pending_orders()
     print(f"[미체결 주문 개수] {len(pending_orders)}건")
-    print(f"[DEBUG] pending_orders: {pending_orders}")
     if not pending_orders:
         print("[모든 주문 체결] 미체결 주문 없음. 리밸런싱 주문을 시작합니다.")
         return True
     print(f"[미체결 주문 감지] {len(pending_orders)}건. 상태 확인 및 갱신 중...")
-    all_done = True
-    for order in pending_orders:
-        print(f"[DEBUG] order: {order}")
-        try:
-            uuid = order[2]
-            order_type = order[1]
-        except Exception as e:
-            print(f"[ERROR] order 인덱싱 실패: {e}, order={order}")
-            all_done = False
-            continue
-        if not uuid:
-            print(f"[경고] uuid 없음: {order}")
-            all_done = False
-            continue
-        if not isinstance(uuid, str):
-            print(
-                f"[경고] uuid 타입이 str이 아님: {uuid} ({type(uuid)}) -> str(uuid)로 변환"
-            )
-            uuid = str(uuid)
-        try:
-            order_status = api.check_order_status(uuid)
-            print(f"[DEBUG] check_order_status 반환값: {order_status}")
-        except Exception as e:
-            print(f"[ERROR] 주문 상태 확인 실패: uuid={uuid}, error={e}")
-            print(traceback.format_exc())
-            all_done = False
-            continue
-        if order_status in ("done", "cancel"):
-            print(
-                f"[DEBUG] update_order_status 호출: uuid={uuid}, type={order_type}, status={order_status}"
-            )
-            try:
-                update_order_status_func(uuid, order_status)
-            except Exception as e:
-                print(f"[ERROR] update_order_status 예외: uuid={uuid}, error={e}")
-                print(traceback.format_exc())
-            print(f"[주문 체결] {order_type} uuid={uuid} status={order_status}")
-        else:
-            all_done = False
-    if not all_done:
+    if not stop_flag[0]:
         print(f"[Watching] 미체결 주문이 남아 있습니다. {term_hour}시간 후 재확인.")
         time.sleep(term_hour * 3600)
-    return all_done
+    return False
 
 
 # ====== 리밸런싱 반복 실행 ======
@@ -262,7 +251,8 @@ term_hour = st.number_input(
     value=TERM_DEFAULT,
 )
 
-col1, col2 = st.columns(2)
+# 버튼 영역: START/STOP 버튼을 한 줄에 붙여서 배치
+col1, col2, _ = st.columns([1, 1, 6])
 with col1:
     start_disabled = krw_warning or (
         st.session_state["thread"] is not None and st.session_state["thread"].is_alive()
@@ -304,21 +294,47 @@ for msg in st.session_state["log"]:
     st.write(msg)
 
 
-def render_recent_orders():
+# ====== 주문 상태 동기화 및 이력 조회 ======
+def sync_pending_orders_and_get_history(api, limit=20):
+    """
+    1. DB에서 미체결 주문을 upbit에서 동기화
+    2. 최신 주문 이력 반환
+    """
+    try:
+        update_all_pending_orders_status(api)
+        orders = get_recent_orders(limit)
+        return orders
+    except Exception as e:
+        print(f"[ERROR] 주문 동기화 전체 실패: {e}")
+        print(traceback.format_exc())
+        return []
+
+
+def render_recent_orders_ui(api):
+    """
+    주문 이력 및 새로고침 UI 렌더링
+    """
     st.write("## 최근 주문 이력 (최신 20건)")
-    orders = get_recent_orders()
+    if st.button("주문 이력 새로고침", key="refresh_orders_btn"):
+        st.session_state["orders_refresh"] = True
+    # 버튼 클릭 또는 최초 진입 시만 갱신
+    if st.session_state.get("orders_refresh", True):
+        orders = sync_pending_orders_and_get_history(api)
+        st.session_state["orders"] = orders
+        st.session_state["orders_refresh"] = False
+    else:
+        orders = st.session_state.get("orders", [])
     if not orders:
         st.write("주문 이력이 없습니다.")
-    else:
-        columns = ["티커", "타입", "UUID", "가격", "수량", "상태", "생성시각"]
-        # row와 컬럼 개수 불일치 시 자동 조정
-        n_cols = len(orders[0])
-        use_columns = columns[:n_cols]
-        if n_cols != len(columns):
-            st.write(f"[DEBUG] orders[0]: {orders[0]}")
-            st.write(f"[DEBUG] row 컬럼 개수: {n_cols}, columns: {use_columns}")
-        df = pd.DataFrame(orders, columns=use_columns)
-        st.dataframe(df, hide_index=True)
+        return
+    columns = ["티커", "타입", "UUID", "가격", "수량", "상태", "생성시각"]
+    n_cols = len(orders[0])
+    use_columns = columns[:n_cols]
+    if n_cols != len(columns):
+        st.write(f"[DEBUG] orders[0]: {orders[0]}")
+        st.write(f"[DEBUG] row 컬럼 개수: {n_cols}, columns: {use_columns}")
+    df = pd.DataFrame(orders, columns=use_columns)
+    st.dataframe(df, hide_index=True)
 
 
-render_recent_orders()
+render_recent_orders_ui(api)
