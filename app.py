@@ -259,7 +259,7 @@ def render_sidebar(api: UpbitAPI, state: AppState):
         st.sidebar.metric("현재가", f"{state.current_price:,.0f} KRW")
         st.sidebar.metric(
             "보유수량",
-            f"{state.balance:,.4f} {state.selected_ticker.replace('KRW-','')}",
+            f"{state.balance:,.4f} {state.selected_ticker.replace('KRW-', '')}",
         )
 
     # 리밸런싱 설정
