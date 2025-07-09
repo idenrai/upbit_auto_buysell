@@ -208,35 +208,94 @@ def place_new_orders(api: UpbitAPI, state: AppState, ticker, ratio, price_ratio)
 
 
 def rebalance_loop(
-    api: UpbitAPI, state: AppState, ticker, ratio, price_ratio, term_hour
+    api: UpbitAPI,
+    log_queue: queue.Queue,
+    stop_event: threading.Event,
+    ticker,
+    ratio,
+    price_ratio,
+    term_hour,
 ):
-    """리밸런싱 로직을 주기적으로 실행하는 메인 루프"""
-    state.log("[리밸런싱 루프 시작]")
-    while not state.stop_event.is_set():
+    """리밸런싱 로직을 주기적으로 실행하는 메인 루프 (Thread-safe 객체만 사용)"""
+    log_queue.put("[리밸런싱 루프 시작]")
+    while not stop_event.is_set():
         try:
-            sync_all_pending_orders(api, state)
+            # 주문 동기화
             pending_orders = get_pending_orders()
-            state.log(f"[미체결 주문 확인] {len(pending_orders)}건")
-
+            log_queue.put(
+                f"[주문 동기화] 미체결 주문 {len(pending_orders)}건 상태 확인 시작"
+            )
+            for order in pending_orders:
+                try:
+                    uuid = order[2]
+                    if not uuid or not isinstance(uuid, str):
+                        log_queue.put(f"[경고] 유효하지 않은 UUID: {order}")
+                        continue
+                    status = api.check_order_status(uuid)
+                    log_queue.put(f"[주문 상태 갱신] UUID: {uuid}, 상태: {status}")
+                    if status != order[5]:
+                        update_order_status(uuid, status)
+                except Exception as e:
+                    log_queue.put(f"[오류] 주문 상태 동기화 실패: {e}, 주문: {order}")
+                    log_queue.put(traceback.format_exc())
+            log_queue.put(f"[미체결 주문 확인] {len(pending_orders)}건")
             if not pending_orders:
-                state.log(
+                log_queue.put(
                     "[상태] 모든 주문 체결 완료. 신규 리밸런싱 주문을 시작합니다."
                 )
-                place_new_orders(api, state, ticker, ratio, price_ratio)
+                # 신규 주문 발주
+                try:
+                    current_price = pyupbit.get_current_price(ticker)
+                    log_queue.put(f"[{ticker}] 현재가: {current_price}")
+                    balance = api.get_balance(ticker)
+                    log_queue.put(f"[{ticker}] 보유 수량: {balance}")
+                    amount = round(balance * ratio, 8)
+                    log_queue.put(f"[{ticker}] 주문 수량: {amount}")
+                    order_info = api.rebalancing_orders(
+                        ticker, current_price, amount, price_ratio
+                    )
+                    if not (
+                        order_info
+                        and order_info.get("sell_uuid")
+                        and order_info.get("buy_uuid")
+                    ):
+                        log_queue.put(
+                            "[오류] 주문 정보가 비어있거나 UUID가 없습니다. 주문 저장을 건너뜁니다."
+                        )
+                        log_queue.put(f"[진단] 전체 주문 정보: {order_info}")
+                        log_queue.put(
+                            f"[진단] 주문 수량: {amount}, 최소 주문 금액: {current_price * amount}"
+                        )
+                        continue
+                    for side in ["sell", "buy"]:
+                        save_order(
+                            ticker=ticker,
+                            order_type=side,
+                            uuid=order_info[f"{side}_uuid"],
+                            price=float(order_info[f"{side}_price"]),
+                            amount=float(amount),
+                            status="requested",
+                        )
+                    log_queue.put(
+                        f"[매도 주문] 가격: {order_info['sell_price']:.2f}, 수량: {amount}"
+                    )
+                    log_queue.put(
+                        f"[매수 주문] 가격: {order_info['buy_price']:.2f}, 수량: {amount}"
+                    )
+                except Exception as e:
+                    log_queue.put(f"[오류] 신규 주문 발주 중 예외 발생: {e}")
+                    log_queue.put(traceback.format_exc())
             else:
-                state.log(
+                log_queue.put(
                     f"[상태] 미체결 주문이 남아있어 대기합니다. ({len(pending_orders)}건)"
                 )
-
-            state.log(f"[대기] {term_hour}시간 후 다음 확인을 시작합니다.")
-            state.stop_event.wait(term_hour * 3600)
-
+            log_queue.put(f"[대기] {term_hour}시간 후 다음 확인을 시작합니다.")
+            stop_event.wait(term_hour * 3600)
         except Exception as e:
-            state.log(f"[오류] 리밸런싱 루프 중 예외 발생: {e}")
-            state.log(traceback.format_exc())
-            state.stop_event.wait(60)  # 오류 발생 시 1분 대기
-
-    state.log("[리밸런싱 루프 종료]")
+            log_queue.put(f"[오류] 리밸런싱 루프 중 예외 발생: {e}")
+            log_queue.put(traceback.format_exc())
+            stop_event.wait(60)
+    log_queue.put("[리밸런싱 루프 종료]")
 
 
 # ==============================================================================
@@ -280,23 +339,18 @@ def render_control_buttons(api: UpbitAPI, state: AppState, config):
     """START/STOP 버튼 UI 구성"""
     st.sidebar.write("---")
     ratio_val, price_ratio_val, term_hour = config
-
-    # KRW 잔액 확인 및 경고
     rebalance_amount = state.balance * ratio_val if state.balance else 0
     buy_price = (
         state.current_price * (1 - price_ratio_val) if state.current_price else 0
     )
     min_krw_required = buy_price * rebalance_amount
     my_krw = api.get_krw_balance()
-
     st.sidebar.metric("내 KRW 잔액", f"{my_krw:,.0f} KRW")
     is_krw_insufficient = my_krw < min_krw_required
     if is_krw_insufficient:
         st.sidebar.warning(
             f"매수에 필요한 KRW가 부족합니다. (필요: {min_krw_required:,.0f} KRW)"
         )
-
-    # 버튼
     col1, col2 = st.sidebar.columns(2)
     start_disabled = is_krw_insufficient or state.is_thread_alive()
     if col1.button("START", disabled=start_disabled, use_container_width=True):
@@ -305,7 +359,8 @@ def render_control_buttons(api: UpbitAPI, state: AppState, config):
             target=rebalance_loop,
             args=(
                 api,
-                state,
+                state.log_queue,
+                state.stop_event,
                 state.selected_ticker,
                 ratio_val,
                 price_ratio_val,
@@ -316,13 +371,11 @@ def render_control_buttons(api: UpbitAPI, state: AppState, config):
         state.rebalance_thread = thread
         thread.start()
         st.rerun()
-
     stop_disabled = not state.is_thread_alive()
     if col2.button("STOP", disabled=stop_disabled, use_container_width=True):
         state.stop_event.set()
         st.toast("자동 주문 중지를 요청했습니다. 현재 주기를 마치고 종료됩니다.")
         st.rerun()
-
     if state.is_thread_alive():
         st.sidebar.success("리밸런싱 봇이 실행 중입니다...")
 

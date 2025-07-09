@@ -29,11 +29,11 @@
 Poetry를 이용하여 개발 환경 구축
 
 ```shell
-poetry install
+make shell
 ```
 
 ```shell
-poetry shell
+make install
 ```
 
 ### 환경변수 설정
@@ -48,5 +48,5 @@ SECRET_KEY=<Upbit Secret Key>
 ## Run
 
 ```shell
-streamlit run app.py
+make serve
 ```
